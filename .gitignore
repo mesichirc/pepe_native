@@ -1,0 +1,8 @@
+*.mobileprovision
+.DS_Store
+DuckApp.app
+DuckApp.app/
+DuckApp.xcodeproj
+DuckApp.xcodeproj/
+variables.sh
+DuckApp.xcent
