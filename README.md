@@ -1,3 +1,3 @@
 # Pepe Native UI framework
 
-![Logo!](./logo.jpg "Logo")
+![Logo!](https://github.com/mesichirc/pepe_native/raw/main/logo.png "Logo")
