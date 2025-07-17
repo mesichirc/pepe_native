@@ -53,9 +53,7 @@ itoa(u32 x, char *buf)
       rx /= 10;
       --ndigits;
     }
-  }
-
-  
+  }  
 }
 
 typedef struct RecyclerContext RecyclerContext;
