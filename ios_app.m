@@ -7,6 +7,7 @@
 #include <stdbool.h> // bool
 #include <sys/mman.h> // for mmap
 #include <assert.h> // for assert
+#include <objc/runtime.h>
 
 #ifndef nil
 #define nil (void *)0
@@ -32,7 +33,19 @@ typedef uintptr_t	uptr;
 
 #define unused(x) (void)(x)
 
+@interface ScrollView : UIView
+@property (strong, nonatomic) UIView *contentView;
+@property (strong, nonatomic) UIScrollView *scroll;
+@end
 
+// ios-colors
+Clay_Color mint  = {0, 200, 179, 255};
+Clay_Color black = {0, 0, 0, 255};
+Clay_Color gray6 = {28, 28, 30, 255};
+Clay_Color red   = {255, 66, 69, 255};
+Clay_Color blue  = {0, 145, 255, 255};
+Clay_Color green = {48, 209, 88, 255};
+Clay_Color yellow = {255, 214, 0, 255};
 
 void
 itoa(u32 x, char *buf)
@@ -99,6 +112,14 @@ Clay_colorToUIColor(Clay_Color color)
 
 void
 UIView_setBorderRadius(UIView *view, Clay_CornerRadius corners) {
+  if (corners.topLeft == 0 && corners.bottomLeft == 0 && corners.topRight == 0 && corners.bottomRight == 0) {
+    return;
+  }
+  if (corners.topLeft == corners.bottomRight && corners.topRight == corners.bottomLeft && corners.bottomLeft == corners.topLeft) {
+    view.layer.cornerRadius = corners.bottomRight; 
+    view.clipsToBounds = true;
+    return;
+  }
   CGMutablePathRef path = CGPathCreateMutable();
   CGPoint topLeft = view.bounds.origin;
   CGPoint topRight = CGPointMake(view.bounds.origin.x + view.bounds.size.width, view.bounds.origin.y);
@@ -214,13 +235,73 @@ ScissorStack_get(ScissorStack *stack, u64 indx)
   return &stack->data[indx];
 }
 
-@interface ScrollView : UIScrollView
-@property (strong, nonatomic) UIView *contentView;
-@end
 
 @implementation ScrollView
+
+
 @end
 
+ScrollView *
+ScrollView_init(CGRect frame)
+{
+  ScrollView *scrollView = [[ScrollView alloc] initWithFrame:frame];
+  scrollView.scroll = [[UIScrollView alloc] initWithFrame:scrollView.bounds];
+  scrollView.contentView = [[UIView alloc] initWithFrame:scrollView.scroll.bounds];
+
+  [scrollView addSubview:scrollView.scroll];
+  [scrollView.scroll addSubview:scrollView.contentView];
+
+  return scrollView;
+}
+
+void
+ScrollView_setFrame(ScrollView *view, CGRect frame)
+{
+  view.frame = frame;
+  view.scroll.frame = frame;
+}
+
+CGSize
+ScrollView_getContentSize(ScrollView *view)
+{
+  return view.scroll.contentSize;
+}
+
+void
+ScrollView_setContentSize(ScrollView *view, CGSize size)
+{
+  view.scroll.contentSize = size;
+  CGRect frame = view.contentView.frame;
+  view.contentView.frame = CGRectMake(
+      frame.origin.x,
+      frame.origin.y,
+      size.width,
+      size.height
+  );
+}
+
+
+#define CONTENT_VIEW(view) ([(view) isKindOfClass:[ScrollView class]] ? ((ScrollView *)view).contentView : view)
+
+#define SUBVIEWS(view) ([(view) isKindOfClass:[ScrollView class]] ? ((ScrollView *)view).contentView.subviews : view.subviews)
+
+void
+View_addSubview(UIView *view, UIView *child)
+{
+  [CONTENT_VIEW(view) addSubview:child];
+}
+
+void
+View_insertSubview(UIView *view, UIView *child, u32 index)
+{
+  [CONTENT_VIEW(view) insertSubview:child atIndex:index];
+}
+
+void 
+View_inserSubviewAbove(UIView *view, UIView *child, UIView *above)
+{
+  [CONTENT_VIEW(view) insertSubview:child aboveSubview:above];
+}
 
 @interface AppDelegate : UIResponder <UIApplicationDelegate>
 @property (strong, nonatomic) UIWindow *window;
@@ -262,7 +343,6 @@ UIView *
 getContentView(UIView *view)
 {
   if ([view isKindOfClass:[ScrollView class]]) {
-
     return ((ScrollView *)view).contentView;
   }
   return view;
@@ -290,7 +370,7 @@ IOS_Render(Clay_RenderCommandArray renderCommands,  AppDelegate *delegate)
     Clay_BoundingBox bbox             = renderCommand->boundingBox;
     CGRect frame                      = CGRectMake(bbox.x, bbox.y, bbox.width, bbox.height);
     // TODO: use custom map instead of NSDictionary
-    NSString *key                     = [NSString stringWithFormat:@"%d", renderCommand->id];
+    NSString *key                     = [NSString stringWithFormat:@"%u", renderCommand->id];
     bool isMultiConfigElement = previousId == renderCommand->id;
     Clay_ScrollContainerData scrollData = Clay_GetScrollContainerDataByIntID(renderCommand->id);   
     if (!delegate.elementsCache[key]) {
@@ -300,9 +380,7 @@ IOS_Render(Clay_RenderCommandArray renderCommands,  AppDelegate *delegate)
       {
         case CLAY_RENDER_COMMAND_TYPE_RECTANGLE: {
           if (scrollData.found) {
-              ScrollView *scrollView = [[ScrollView alloc] initWithFrame:frame];
-            scrollView.contentView = [[UIView alloc] initWithFrame:scrollView.bounds];
-            [scrollView addSubview:scrollView.contentView];
+            ScrollView *scrollView = ScrollView_init(frame);
             delegate.elementsCache[key] = makeElementData(scrollView);
           } else {
             delegate.elementsCache[key] = makeElementData([[UIView alloc] initWithFrame:frame]);
@@ -330,18 +408,17 @@ IOS_Render(Clay_RenderCommandArray renderCommands,  AppDelegate *delegate)
     NSData *previousFrame = (NSData *)elementData[@"previousFrame"];
 
     bool isDirty = !(previousFrame != nil && isMemoryEqual((void *)previousFrame.bytes, previousFrame.length, (void *)&frame, sizeof(CGRect))) && !isMultiConfigElement;
-    UIView *parentConentView = getContentView(parentElement);
-
-    if (!isMultiConfigElement && (parentConentView.subviews.count == 0 || ((u64)[parentConentView.subviews indexOfObject:element] != (u64)parentElementData->nextElementIndex)) && element) {
+    NSArray *parentSubviews = SUBVIEWS(parentElement);
+    if (!isMultiConfigElement && (parentSubviews.count == 0 || ((u64)[parentSubviews indexOfObject:element] != (u64)parentElementData->nextElementIndex)) && element) {
       if (parentElementData->nextElementIndex == 0) {
-        if (parentConentView.subviews.count == 0) {
-          [parentConentView insertSubview:element atIndex:0];
+        if (parentSubviews.count == 0) {
+          View_insertSubview(parentElement, element, 0);
         } else {
-          [parentConentView addSubview:element];
+          View_addSubview(parentElement, element);
         }
       } else {
         [element removeFromSuperview]; 
-        [parentConentView insertSubview:element aboveSubview:parentConentView.subviews[(u64)(parentElementData->nextElementIndex - 1)]];
+        View_inserSubviewAbove(parentElement, element, parentSubviews[(u64)(parentElementData->nextElementIndex - 1)]);
       }
     }
 
@@ -365,9 +442,7 @@ IOS_Render(Clay_RenderCommandArray renderCommands,  AppDelegate *delegate)
     switch (renderCommand->commandType) 
     { 
       case CLAY_RENDER_COMMAND_TYPE_RECTANGLE: {
-        Clay_RectangleRenderData *config = &renderCommand->renderData.rectangle;
-        
-
+        Clay_RectangleRenderData *config = &renderCommand->renderData.rectangle; 
         NSData *previousConfig = elementData[@"previousConfig"];
         if (isMemoryEqual((void *)previousConfig.bytes, previousConfig.length, (void *)config, sizeof(Clay_RectangleRenderData))) {
           break; 
@@ -375,22 +450,23 @@ IOS_Render(Clay_RenderCommandArray renderCommands,  AppDelegate *delegate)
 
         UIView_setBorderRadius(element, config->cornerRadius);
         elementData[@"previousConfig"] = [NSData dataWithBytes:(const void *)config length:sizeof(Clay_RectangleRenderData)];
-        NSLog(@"view = %@", element);
-
         Clay_Color bgColor = config->backgroundColor;
         element.backgroundColor = Clay_colorToUIColor(bgColor);
         break;
       }
       case CLAY_RENDER_COMMAND_TYPE_SCISSOR_START: { 
-        if (scrollData.found) {
-          ScrollView *scroll = (ScrollView *)element;
-          if ((u64)scroll.contentSize.width != (u64)scrollData.contentDimensions.width || (u64)scroll.contentSize.height != (u64)scrollData.contentDimensions.height) {
-            
-              [scroll setContentSize:CGSizeMake(scrollData.contentDimensions.width, scrollData.contentDimensions.height)];
 
-              [scroll.contentView setFrame:CGRectMake(0, 0, scrollData.contentDimensions.width, scrollData.contentDimensions.height)];
+        if (scrollData.found && [element isKindOfClass:[ScrollView class]]) {
+          ScrollView *scrollView = (ScrollView *)element;
+          CGSize contentSize = ScrollView_getContentSize(scrollView);
+          if ((u64)contentSize.width != (u64)scrollData.contentDimensions.width || (u64)contentSize.height != (u64)scrollData.contentDimensions.height) { 
+            ScrollView_setContentSize(scrollView, CGSizeMake(
+              scrollData.contentDimensions.width,
+              scrollData.contentDimensions.height
+            ));
           }
         }
+
         ScissorStack_push(&scissorStack, (ScissorItem) {
             .nextAllocation = {bbox.x, bbox.y},
             .element = element,
@@ -419,9 +495,6 @@ IOS_Render(Clay_RenderCommandArray renderCommands,  AppDelegate *delegate)
         textElement.text = [[NSString alloc] initWithBytes:(void *)string.chars 
                                                       length:string.length 
                                                     encoding:NSUTF8StringEncoding];
-        for (u32 i = 0; i < textElement.superview.subviews.count; i++) {
-          NSLog(@"sibling = %@", textElement.superview.subviews[i]);
-        }
         if ((u64)string.length != (u64)previousText.length || !isMemoryEqual((void *)[previousText cStringUsingEncoding:NSUTF8StringEncoding], previousText.length, (void *)string.chars, string.length)) {
           textElement.text = [[NSString alloc] initWithBytes:(void *)string.chars 
                                                       length:string.length 
@@ -584,15 +657,6 @@ void HandleRendererButtonInteraction(Clay_ElementId elementId, Clay_PointerData 
 
 #define STRING_SLICE(string, size) (CLAY__INIT(Clay_String) { .isStaticallyAllocated = true, .length = size, .chars = (string) })
 
-// ios-colors
-Clay_Color mint  = {0, 200, 179, 255};
-Clay_Color black = {0, 0, 0, 255};
-Clay_Color gray6 = {28, 28, 30, 255};
-Clay_Color red   = {255, 66, 69, 255};
-Clay_Color blue  = {0, 145, 255, 255};
-Clay_Color green = {48, 209, 88, 255};
-Clay_Color yellow = {255, 214, 0, 255};
-
 Clay_RenderCommandArray 
 IOS_layout(void)
 {
@@ -619,7 +683,7 @@ IOS_layout(void)
         .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)}, 
         .childAlignment = { .y = CLAY_ALIGN_Y_CENTER, .x = CLAY_ALIGN_X_CENTER },
         .layoutDirection = CLAY_TOP_TO_BOTTOM,
-        .padding = {.top = 56 },
+        .padding = {.top = 56 }
       }, 
       .backgroundColor = gray6 
   }) {
@@ -640,13 +704,11 @@ IOS_layout(void)
       }
 
       Clay_OnHover(HandleRendererButtonInteraction, 0);
-      /*
       CLAY_TEXT(CLAY_STRING("SOME TEXT"), CLAY_TEXT_CONFIG({
           .fontId = 0,
           .fontSize = 24,
           .textColor = black
       }));
-      */
 
     }
     CLAY({
@@ -654,11 +716,11 @@ IOS_layout(void)
       .layout = {
         .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0) },
         .layoutDirection = CLAY_TOP_TO_BOTTOM, 
-        .childGap = 16
+        .childGap = 16,
       },
+      .cornerRadius = {.topLeft = 10, .bottomRight = 24},
       .clip = {
         .vertical = true
-        //.childOffset = Clay_GetScrollOffset()
       },
       .backgroundColor = {0, 200, 179, 255}
     }) {
@@ -671,51 +733,7 @@ IOS_layout(void)
           .backgroundColor = { 203, 48, 245, 255 }
         });
       }
-    }
-
-    /*
-    RecyclerContext rCtx = BeginRecycler(CLAY_STRING("boxes"), true, 1);
-    CLAY({
-      .id = rCtx.containerId,
-      .layout = {
-        .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0) },
-        .layoutDirection = CLAY_TOP_TO_BOTTOM,
-      },
-      .backgroundColor = black,
-      .clip = { .vertical = true }
-    }) {
-      RecyclerItem item = recyclerGetNext(&rCtx);
-      while (item.valid) {
-
-        CLAY({
-          .id = item.id,
-          .layout = {
-            .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0) }
-          }
-        }) {
-          CLAY({
-            .id = CLAY_IDI_LOCAL("CELL", item.index),
-            .layout = {
-              .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(56) },
-              .padding = { .bottom = 8 },
-            },
-            .backgroundColor = item.index % 2 == 0 ? red : (item.index % 3 ? green : blue)
-          })
-          {
-            CLAY_TEXT(CLAY_STRING("CSTRhh"), CLAY_TEXT_CONFIG({
-              .fontId = 1,
-              .fontSize = 24,
-              .textColor = gray6
-            }));
-
-          }
-        }
-        item = recyclerGetNext(&rCtx);
-      }
-    }
-
-    */
-      
+    }   
   }
     
 
