@@ -25,6 +25,4 @@ typedef uintptr_t	uptr;
 
 #define unused(x) (void)(x)
 
-
-
 #endif

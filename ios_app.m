@@ -25,6 +25,22 @@ Clay_colorToUIColor(Clay_Color color)
                           alpha:((f32)color.a / 255.0)];
 }
 
+Clay_Vector2
+queryScrollOffsetFunction(u32 elementId, void *userData)
+{
+  Clay_Vector2 result = {0};
+  NSDictionary *elementsCache = (__bridge NSDictionary *)userData;
+  NSDictionary *elementData = elementsCache[[NSString stringWithFormat:@"%u", elementId]];
+  if (elementData) {
+     UIView *view = elementData[@"view"];
+     if (view && [view isKindOfClass:[ScrollView class]]) {
+       result.x = ((ScrollView *)view).scroll.contentOffset.x;
+       result.y = ((ScrollView *)view).scroll.contentOffset.y;
+     }
+  }
+  return result;
+}
+
 void
 UIView_setBorderRadius(UIView *view, Clay_CornerRadius corners) {
   if (corners.topLeft == 0 && corners.bottomLeft == 0 && corners.topRight == 0 && corners.bottomRight == 0) {
@@ -183,6 +199,7 @@ ScrollView_getContentSize(ScrollView *view)
 void
 ScrollView_setContentSize(ScrollView *view, CGSize size)
 {
+  size.height *= 3;
   view.scroll.contentSize = size;
   CGRect frame = view.contentView.frame;
   view.contentView.frame = CGRectMake(
@@ -503,8 +520,8 @@ void HandleClayErrors(Clay_ErrorData errorData) {
         NSStringFromCGRect([[UIScreen mainScreen] bounds]),
         scale
     );
-
-  
+ 
+    self.elementsCache = [[NSMutableDictionary alloc] init];
     u64 clayRequiredMemory = Clay_MinMemorySize();
     Clay_Arena clayMemory = Clay_CreateArenaWithCapacityAndMemory(clayRequiredMemory, mmap(nil, clayRequiredMemory, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0));
     Clay_Initialize(clayMemory, (Clay_Dimensions) {
@@ -513,6 +530,10 @@ void HandleClayErrors(Clay_ErrorData errorData) {
     }, (Clay_ErrorHandler) { HandleClayErrors, nil });
     Clay_SetMeasureTextFunction(IOS_MeasureText, nil);
 
+    Clay_SetQueryScrollOffsetFunction(queryScrollOffsetFunction, (__bridge void *)self.elementsCache);
+
+    Clay_SetExternalScrollHandlingEnabled(true);
+    Clay_SetCullingEnabled(false);
     CADisplayLink *displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(step:)];
     [displayLink addToRunLoop:[NSRunLoop currentRunLoop]
                       forMode:NSRunLoopCommonModes];

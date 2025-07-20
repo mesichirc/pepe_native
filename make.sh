@@ -159,5 +159,8 @@ case $1 in
   xcodeproj)
     generate_xcodeproj
     ;;
+  watch)
+    ls *.h *.m | entr -sr './make.sh build && ./make.sh run sim'
+    ;;
 esac
 
