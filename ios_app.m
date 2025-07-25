@@ -1,34 +1,38 @@
 #include <QuartzCore/QuartzCore.h>
 #include <Foundation/Foundation.h>
 #include <UIKit/UIKit.h>
-#define CLAY_IMPLEMENTATION
-#include "./clay.h"
 #include <stdint.h> // stdint's
 #include <stdbool.h> // bool
 #include <sys/mman.h> // for mmap
 #include <assert.h> // for assert
 #include <objc/runtime.h>
 #include "./u.h"
-#include "./app_example.h"
+#include "./pepe_layout.h"
+#include "./ios_helpers.h"
 
 @interface ScrollView : UIView
 @property (strong, nonatomic) UIView *contentView;
 @property (strong, nonatomic) UIScrollView *scroll;
 @end
 
-UIColor *
-Clay_colorToUIColor(Clay_Color color)
-{
-  return  [UIColor colorWithRed:((f32)color.r / 255.0)
-                          green:((f32)color.g / 255.0)
-                           blue:((f32)color.b / 255.0)
-                          alpha:((f32)color.a / 255.0)];
-}
+typedef struct TapState TapState;
+struct TapState {
+  Pepe_Point point;
+  i32 isPressed;
+};
 
-Clay_Vector2
+typedef struct AppContext AppContext;
+struct AppContext {
+  Pepe_Context context;
+  TapState     tapState;
+};
+
+static AppContext appContext;
+
+Pepe_Point
 queryScrollOffsetFunction(u32 elementId, void *userData)
 {
-  Clay_Vector2 result = {0};
+  Pepe_Point result = {0};
   NSDictionary *elementsCache = (__bridge NSDictionary *)userData;
   NSDictionary *elementData = elementsCache[[NSString stringWithFormat:@"%u", elementId]];
   if (elementData) {
@@ -41,98 +45,12 @@ queryScrollOffsetFunction(u32 elementId, void *userData)
   return result;
 }
 
-void
-UIView_setBorderRadius(UIView *view, Clay_CornerRadius corners) {
-  if (corners.topLeft == 0 && corners.bottomLeft == 0 && corners.topRight == 0 && corners.bottomRight == 0) {
-    return;
-  }
-  if (corners.topLeft == corners.bottomRight && corners.topRight == corners.bottomLeft && corners.bottomLeft == corners.topLeft) {
-    view.layer.cornerRadius = corners.bottomRight; 
-    view.clipsToBounds = true;
-    return;
-  }
-  CGMutablePathRef path = CGPathCreateMutable();
-  CGPoint topLeft = view.bounds.origin;
-  CGPoint topRight = CGPointMake(view.bounds.origin.x + view.bounds.size.width, view.bounds.origin.y);
-  CGPoint bottomLeft = CGPointMake(view.bounds.origin.x, view.bounds.origin.y + view.bounds.size.height);
-  CGPoint bottomRight = CGPointMake(view.bounds.origin.x + view.bounds.size.width, view.bounds.origin.y + view.bounds.size.height);
-
-  if (corners.topLeft != 0.0f) {
-    CGPathMoveToPoint(path, nil, topLeft.x + corners.topLeft, topLeft.y);
-  } else {
-    CGPathMoveToPoint(path, nil, topLeft.x, topLeft.y);
-  }
-
-  if (corners.topRight != 0.0f) {
-    CGPathAddLineToPoint(path, nil, topRight.x - corners.topRight, topRight.y);
-    CGPathAddCurveToPoint(path, nil,  topRight.x, topRight.y, topRight.x, topRight.y + corners.topRight, topRight.x, topRight.y + corners.topRight);
-  } else {
-    CGPathMoveToPoint(path, nil, topRight.x, topRight.y);
-  }
-
-  if (corners.bottomRight != 0.0f) {
-    CGPathAddLineToPoint(path, nil, bottomRight.x, bottomRight.y - corners.bottomRight);
-    CGPathAddCurveToPoint(path, nil, bottomRight.x, bottomRight.y, bottomRight.x - corners.bottomRight, bottomRight.y, bottomRight.x - corners.bottomRight, bottomRight.y);
-  } else {
-    CGPathAddLineToPoint(path, nil, bottomRight.x, bottomRight.y);
-  }
-
-  if (corners.bottomLeft != 0.0f) {
-    CGPathAddLineToPoint(path, nil, bottomLeft.x + corners.bottomLeft, bottomRight.y);
-    CGPathAddCurveToPoint(path, nil, bottomLeft.x, bottomLeft.y, bottomLeft.x, bottomLeft.y - corners.bottomLeft, bottomLeft.x, bottomLeft.y - corners.bottomLeft);
-  } else {
-    CGPathAddLineToPoint(path, nil, bottomLeft.x, bottomRight.y);
-  }
-
-  if (corners.topLeft != 0.0f) {
-    CGPathAddLineToPoint(path, nil, topLeft.x, topLeft.y + corners.topLeft);
-    CGPathAddCurveToPoint(path, nil, topLeft.x, topLeft.y, topLeft.x + corners.topLeft, topLeft.y, topLeft.x + corners.topLeft, topLeft.y);
-  } else {
-    CGPathAddLineToPoint(path, nil, topLeft.x, topLeft.y);
-  }
-  CGPathCloseSubpath(path);
-  CAShapeLayer* shape = [CAShapeLayer layer];
-  shape.path = path;
-  view.layer.mask = shape;
-}
-
-// TODO: Make different fonts available
-static inline Clay_Dimensions 
-IOS_MeasureText(Clay_StringSlice text, Clay_TextElementConfig *config, void *ud)
-{
-  unused(config);
-  unused(ud);
-  Clay_Dimensions textSize = { 0 };
-  UIFont *font = [UIFont systemFontOfSize:config->fontSize];
-  // TODO: remove allocation
-  NSDictionary *attrs = @{
-    NSFontAttributeName : font
-  };
-  
-  NSString *str = [[NSString alloc] initWithBytesNoCopy:(void *)text.chars length:text.length encoding:NSUTF8StringEncoding freeWhenDone:NO];
-
-  // TODO: remove allocation try to reuse attrstr, LRU ?;
-  NSAttributedString *attrstr = [[NSAttributedString alloc] initWithString:str attributes:attrs];
-
-  CGSize size = [attrstr size];
-
-  textSize.width = size.width;
-  textSize.height = size.height;
-
-  return textSize;
-}
-
-typedef struct AllocationPoint AllocationPoint;
-struct AllocationPoint {
-  f32 x;
-  f32 y;
-};
 
 typedef struct ScissorItem ScissorItem;
 struct ScissorItem {
-  AllocationPoint   nextAllocation;
-  UIView            *element;
-  i32               nextElementIndex;
+  Pepe_Point  nextAllocation;
+  UIView      *element;
+  i32         nextElementIndex;
 };
 
 #define SCISSOR_STACK_LEN 256
@@ -165,7 +83,6 @@ ScissorStack_get(ScissorStack *stack, u64 indx)
   assert(stack && stack->len > indx);
   return &stack->data[indx];
 }
-
 
 @implementation ScrollView
 @end
@@ -238,23 +155,24 @@ View_inserSubviewAbove(UIView *view, UIView *child, UIView *above)
 
 @property (strong, nonatomic) NSMutableDictionary *elementsCache;
 @property (strong, nonatomic) NSMutableDictionary *imageCache;
+@property Pepe_Context context;
+
 @property TapState tapState;
 
 @end
 
-bool
-isMemoryEqual(void *src, u64 srcLen, void *dst, u64 dstLen)
-{
-  return srcLen == dstLen && Clay__MemCmp((const char*)src, (const char*)dst, (i32)srcLen);
-}
 static NSData *emptyData;
 static NSString *emptyString;
 
 NSMutableDictionary*
 makeElementData(UIView *view)
 {
-  emptyData = [NSData dataWithBytes:nil length: 0];
-  emptyString = @"";
+  if (emptyData == nil) {
+    emptyData = [NSData dataWithBytes:nil length: 0];
+  }
+  if (emptyString == nil) {
+    emptyString = @"";
+  }
   NSMutableDictionary *res = [[NSMutableDictionary alloc] init];
   res[@"view"] = view;
   res[@"exists"] = @YES;
@@ -275,171 +193,49 @@ getContentView(UIView *view)
 }
 
 void
-IOS_Render(Clay_RenderCommandArray renderCommands,  AppDelegate *delegate) 
+IOS_Render(Pepe_CommandsIterator iterator, AppDelegate *delegate) 
 {
-  if (nil == delegate.elementsCache) {
-    delegate.elementsCache = [[NSMutableDictionary alloc] init];
-  }
-  ScissorStack scissorStack = {0};
-  ScissorStack_push(&scissorStack, (ScissorItem) {
-    .nextAllocation = {0, 0},
-    .element = delegate.window.rootViewController.view,
-    .nextElementIndex = 0,
-  });
+  NSMutableDictionary *elementsCache = delegate.elementsCache;
+  UIView *root = delegate.window.rootViewController.view;
+  PEPE_PROCESS_COMMANDS(iterator, command) {
+    NSNumber *key = @((NSUInteger)command.id);
 
-  u32 previousId = 0;
-
-  for (i32 i = 0; i < renderCommands.length; i++) {
-    ScissorItem *parentElementData    = &scissorStack.data[scissorStack.len - 1];
-    UIView *parentElement             = parentElementData->element;
-    Clay_RenderCommand *renderCommand = Clay_RenderCommandArray_Get(&renderCommands, i);
-    Clay_BoundingBox bbox             = renderCommand->boundingBox;
-    CGRect frame                      = CGRectMake(bbox.x, bbox.y, bbox.width, bbox.height);
-    // TODO: use custom map instead of NSDictionary
-    NSString *key                     = [NSString stringWithFormat:@"%u", renderCommand->id];
-    bool isMultiConfigElement = previousId == renderCommand->id;
-    Clay_ScrollContainerData scrollData = Clay_GetScrollContainerDataByIntID(renderCommand->id);   
-    if (!delegate.elementsCache[key]) {
-
-      // TODO: figure out scroll view and recycler view
-      switch (renderCommand->commandType)
-      {
-        case CLAY_RENDER_COMMAND_TYPE_RECTANGLE: {
-          if (scrollData.found) {
-            ScrollView *scrollView = ScrollView_init(frame);
-            delegate.elementsCache[key] = makeElementData(scrollView);
-          } else {
-            delegate.elementsCache[key] = makeElementData([[UIView alloc] initWithFrame:frame]);
-          }
-
-          break;
-        }
-        case CLAY_RENDER_COMMAND_TYPE_IMAGE: {
-          delegate.elementsCache[key] = makeElementData([[UIImageView alloc] initWithFrame:frame]); 
-          break;
-        }
-        case CLAY_RENDER_COMMAND_TYPE_TEXT: {
-          delegate.elementsCache[key] = makeElementData([[UILabel alloc] initWithFrame:frame]);
-          break;
-        }
-        default:
-          break;
-      }
-    }
-
-    NSMutableDictionary *elementData = delegate.elementsCache[key];
-    UIView *element     = elementData[@"view"];
-    element.tag = renderCommand->id;
-
-    NSData *previousFrame = (NSData *)elementData[@"previousFrame"];
-
-    bool isDirty = !(previousFrame != nil && isMemoryEqual((void *)previousFrame.bytes, previousFrame.length, (void *)&frame, sizeof(CGRect))) && !isMultiConfigElement;
-    NSArray *parentSubviews = SUBVIEWS(parentElement);
-    if (!isMultiConfigElement && (parentSubviews.count == 0 || ((u64)[parentSubviews indexOfObject:element] != (u64)parentElementData->nextElementIndex)) && element) {
-      if (parentElementData->nextElementIndex == 0) {
-        if (parentSubviews.count == 0) {
-          View_insertSubview(parentElement, element, 0);
+    switch (command.type) {
+      case PEPE_RECT: { 
+        UIView *view;
+        if (!elementsCache[key]) {
+          view = [[UIView alloc] initWithFrame:Pepe_RectToCGRect(command.frame)];
+          elementsCache[key] = view;
+          [root addSubview:view];
         } else {
-          View_addSubview(parentElement, element);
+          view = elementsCache[key];
         }
-      } else {
-        [element removeFromSuperview]; 
-        View_inserSubviewAbove(parentElement, element, parentSubviews[(u64)(parentElementData->nextElementIndex - 1)]);
-      }
-    }
-
-    if (!isMultiConfigElement) {
-      parentElementData->nextElementIndex++;
-    }
-    previousId = renderCommand->id;
-    elementData[@"exists"] = @YES;
-
-    f32 offsetX = scissorStack.len > 0 ? parentElementData->nextAllocation.x : 0.0f;
-    f32 offsetY = scissorStack.len > 0 ? parentElementData->nextAllocation.y : 0.0f;
-    if (isDirty) {
-      element.frame = CGRectMake(
-        bbox.x - offsetX,
-        bbox.y - offsetY,
-        frame.size.width,
-        frame.size.height
-      );
-    }
-
-    switch (renderCommand->commandType) 
-    { 
-      case CLAY_RENDER_COMMAND_TYPE_RECTANGLE: {
-        Clay_RectangleRenderData *config = &renderCommand->renderData.rectangle; 
-        NSData *previousConfig = elementData[@"previousConfig"];
-        if (isMemoryEqual((void *)previousConfig.bytes, previousConfig.length, (void *)config, sizeof(Clay_RectangleRenderData))) {
-          break; 
-        }
-
-        UIView_setBorderRadius(element, config->cornerRadius);
-        elementData[@"previousConfig"] = [NSData dataWithBytes:(const void *)config length:sizeof(Clay_RectangleRenderData)];
-        Clay_Color bgColor = config->backgroundColor;
-        element.backgroundColor = Clay_colorToUIColor(bgColor);
+        view.backgroundColor = Pepe_ColorToUIColor(command.backgroundColor);
         break;
       }
-      case CLAY_RENDER_COMMAND_TYPE_SCISSOR_START: { 
-
-        if (scrollData.found && [element isKindOfClass:[ScrollView class]]) {
-          ScrollView *scrollView = (ScrollView *)element;
-          CGSize contentSize = ScrollView_getContentSize(scrollView);
-          if ((u64)contentSize.width != (u64)scrollData.contentDimensions.width || (u64)contentSize.height != (u64)scrollData.contentDimensions.height) { 
-            ScrollView_setContentSize(scrollView, CGSizeMake(
-              scrollData.contentDimensions.width,
-              scrollData.contentDimensions.height
-            ));
-          }
+      case PEPE_TEXT: {
+        UILabel *view;
+        if (!elementsCache[key]) {
+          view = [[UILabel alloc] initWithFrame:Pepe_RectToCGRect(command.frame)];
+          elementsCache[key] = view;
+          [root addSubview:view];
+        } else {
+          view = elementsCache[key];
         }
-
-        ScissorStack_push(&scissorStack, (ScissorItem) {
-            .nextAllocation = {bbox.x, bbox.y},
-            .element = element,
-            .nextElementIndex = 0
-        });
+        if (command.backgroundColor.a > 0) {
+          view.backgroundColor = Pepe_ColorToUIColor(command.backgroundColor);
+        }
+        view.text = [[NSString alloc] initWithBytes:(void *)command.text.base length:command.text.len encoding:NSUTF8StringEncoding];
         break;
       }
-      case CLAY_RENDER_COMMAND_TYPE_SCISSOR_END: {
-        ScissorStack_pop(&scissorStack);
-        break;
-      }
-      case CLAY_RENDER_COMMAND_TYPE_TEXT: {
-        
-        Clay_TextRenderData *config = &renderCommand->renderData.text; 
-        Clay_StringSlice string = config->stringContents;
-        NSData *previousConfig = elementData[@"previousConfig"];
-
-        if (isMemoryEqual((void *)previousConfig.bytes, previousConfig.length, (void *)config, sizeof(Clay_TextRenderData))) {
-          break; 
-        }
-        elementData[@"previousConfig"] = [NSData dataWithBytes:(const void *)config length:sizeof(Clay_TextRenderData)];
-
-        UILabel *textElement = (UILabel *)element;
-        textElement.textColor = Clay_colorToUIColor(config->textColor);
-        NSString *previousText = elementData[@"previousText"];
-        textElement.text = [[NSString alloc] initWithBytes:(void *)string.chars 
-                                                      length:string.length 
-                                                    encoding:NSUTF8StringEncoding];
-        if ((u64)string.length != (u64)previousText.length || !isMemoryEqual((void *)[previousText cStringUsingEncoding:NSUTF8StringEncoding], previousText.length, (void *)string.chars, string.length)) {
-          textElement.text = [[NSString alloc] initWithBytes:(void *)string.chars 
-                                                      length:string.length 
-                                                    encoding:NSUTF8StringEncoding];
-          elementData[@"previousText"] = textElement.text;
-
-        }
-
-        break;
-      }
-      default: {
-        NSLog(@"Not found");
-      }
+      default:
+        printf("not implemented");
     }
   }
+  
 }
 
-
-Clay_RenderCommandArray IOS_layout(void);
+Pepe_CommandsIterator IOS_layout(Pepe_Context *context);
 
 
 @interface Window : UIWindow
@@ -453,13 +249,9 @@ Clay_RenderCommandArray IOS_layout(void);
 @interface AppDelegate ()
 @end
 
-// This function is new since the video was published
-void HandleClayErrors(Clay_ErrorData errorData) {
-    printf("%s\n", errorData.errorText.chars);
-}
-
-
 @interface GestureRecognizer : UIGestureRecognizer
+@property (nonatomic) TapState *tapState;
+
 @end
 
 @implementation GestureRecognizer 
@@ -468,9 +260,9 @@ void HandleClayErrors(Clay_ErrorData errorData) {
   if (touches.count == 1) {
     UITouch *touch = touches.allObjects[0];
     CGPoint point = [touch locationInView:touch.window];
-    tapState.point.x = point.x;
-    tapState.point.y = point.y;
-    tapState.isPressed = 3;
+    self.tapState->point.x = point.x;
+    self.tapState->point.y = point.y;
+    self.tapState->isPressed = 3;
   }
 }
 
@@ -479,27 +271,30 @@ void HandleClayErrors(Clay_ErrorData errorData) {
   if (touches.count == 1) {
     UITouch *touch = touches.allObjects[0];
     CGPoint point = [touch locationInView:touch.window];
-    tapState.point.x = point.x;
-    tapState.point.y = point.y;
-    tapState.isPressed = 3;
+    self.tapState->point.x = point.x;
+    self.tapState->point.y = point.y;
+    self.tapState->isPressed = 3;
   }
 }
 
 - (void) touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
 {
   if (touches.count == 1) { 
-    tapState.isPressed = 2;
+    self.tapState->isPressed = 2;
   }
 }
 
 - (void) touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event
 {
   if (touches.count == 1) {
-    tapState.isPressed = 2; 
+    self.tapState->isPressed = 2; 
   }
 }
 
 @end
+
+
+Pepe_CommandsIterator App_Layout(Pepe_Context *ctx);
 
 
 @implementation AppDelegate
@@ -522,23 +317,16 @@ void HandleClayErrors(Clay_ErrorData errorData) {
     );
  
     self.elementsCache = [[NSMutableDictionary alloc] init];
-    u64 clayRequiredMemory = Clay_MinMemorySize();
-    Clay_Arena clayMemory = Clay_CreateArenaWithCapacityAndMemory(clayRequiredMemory, mmap(nil, clayRequiredMemory, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0));
-    Clay_Initialize(clayMemory, (Clay_Dimensions) {
-        .width = self.window.frame.size.width,
-        .height = self.window.frame.size.height
-    }, (Clay_ErrorHandler) { HandleClayErrors, nil });
-    Clay_SetMeasureTextFunction(IOS_MeasureText, nil);
+ 
+    Pepe_Slice memory = Pepe_SliceInit(mmap(nil, REQUERED_MEMORY, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0), REQUERED_MEMORY);
+    appContext.context = Pepe_ContextInit(memory);
 
-    Clay_SetQueryScrollOffsetFunction(queryScrollOffsetFunction, (__bridge void *)self.elementsCache);
-
-    Clay_SetExternalScrollHandlingEnabled(true);
-    Clay_SetCullingEnabled(false);
     CADisplayLink *displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(step:)];
     [displayLink addToRunLoop:[NSRunLoop currentRunLoop]
                       forMode:NSRunLoopCommonModes];
 
     GestureRecognizer *gestureRecognizer = [[GestureRecognizer alloc] init];
+    gestureRecognizer.tapState = &self->_tapState;
     [self.window addGestureRecognizer:gestureRecognizer];
 
     [self.window makeKeyAndVisible];
@@ -548,17 +336,34 @@ void HandleClayErrors(Clay_ErrorData errorData) {
 
 
 - (void)step:(CADisplayLink *)sender {
-  UIView *view = self.window.rootViewController.view;
-  Clay_SetLayoutDimensions((Clay_Dimensions) {
-      .width = view.frame.size.width,
-      .height = view.frame.size.height
-  });
+  //UIView *view = self.window.rootViewController.view;
 
-  Clay_RenderCommandArray commands = IOS_layout();
+  Pepe_CommandsIterator commands = App_Layout(&appContext.context);
   IOS_Render(commands, self);
 }
 
 @end
+
+Pepe_CommandsIterator
+App_Layout(Pepe_Context *ctx)
+{
+  Pepe_BeginLayout(ctx);
+  Pepe_PushCommand(ctx, (Pepe_Command) {
+    .id = Pepe_Id(ctx, PEPE_STRING_CONST("RECT")),
+    .type = PEPE_RECT, 
+    .frame = (Pepe_Frame) { .origin = {0, 0}, .size = {100, 100} },
+    .backgroundColor = (Pepe_Color) { .r = 255, .g = 255, .b = 255, .a = 255 }
+  });
+  Pepe_PushCommand(ctx, (Pepe_Command) {
+    .id    = Pepe_Id(ctx, PEPE_STRING_CONST("TEXT")),
+    .type  = PEPE_TEXT,
+    .frame = (Pepe_Frame) { .origin = {0, 100}, .size = {200, 100} },
+    .backgroundColor = (Pepe_Color) { .r = 255, .g = 0, .b = 0, .a = 255 },
+    .text  = PEPE_STRING_CONST("SOME LABEL TEXT")
+  });
+
+  return Pepe_EndLayout(ctx);
+}
 
 
 int main(int argc, char * argv[]) {

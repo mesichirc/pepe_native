@@ -2,15 +2,6 @@
 #define APP_EXAMPLE
 
 
-// ios-colors
-Clay_Color mint  = {0, 200, 179, 255};
-Clay_Color black = {0, 0, 0, 255};
-Clay_Color gray6 = {28, 28, 30, 255};
-Clay_Color red   = {255, 66, 69, 255};
-Clay_Color blue  = {0, 145, 255, 255};
-Clay_Color green = {48, 209, 88, 255};
-Clay_Color yellow = {255, 214, 0, 255};
-
 i32
 itoa(u32 x, u8 *buf)
 {
